@@ -1,0 +1,20 @@
+[project]
+name = "openenv-ops-triage"
+version = "0.1.0"
+description = "OpenEnv environment for real-world incident triage workflows."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "openenv-core>=0.1.0",
+  "openai>=1.0.0",
+  "pydantic>=2.0.0",
+  "fastapi>=0.115.0",
+  "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+server = "server.app:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
