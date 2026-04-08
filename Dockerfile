@@ -9,8 +9,8 @@ WORKDIR /app
 COPY . /app
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-EXPOSE 8000
+EXPOSE 7860
 
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 CMD python -c "import os,urllib.request; urllib.request.urlopen(f\"http://localhost:{os.getenv('PORT','7860')}/health\")"
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT:-7860}"]
