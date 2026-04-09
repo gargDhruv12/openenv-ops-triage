@@ -126,8 +126,8 @@ async def run_task(task_name: str, client: Any | None) -> float:
             env = await OpsTriageEnv.from_docker_image(
                 IMAGE_NAME, env_vars={"OPS_TRIAGE_TASK": task_name}
             )
-        except Exception as e:
-            print(f"[ERROR] env_start_failed={type(e).__name__} msg={str(e)}", flush=True)
+        except Exception:
+            # Keep stdout strictly to START/STEP/END for validators.
             return 0.0
 
         result = await env.reset()
@@ -140,21 +140,12 @@ async def run_task(task_name: str, client: Any | None) -> float:
                     action = _get_model_action(
                         client=client, task_name=task_name, observation=obs_dict
                     )
-            except Exception as e:
-                # Never crash validation on model parsing/network issues.
-                print(
-                    f"[ERROR] action_build_failed step={step_idx} err={type(e).__name__} msg={str(e)}",
-                    flush=True,
-                )
+            except Exception:
                 action = OpsTriageAction(action_type="inspect_ticket", focus_field="error_signature")
 
             try:
                 result = await env.step(action)
-            except Exception as e:
-                print(
-                    f"[ERROR] env_step_failed step={step_idx} err={type(e).__name__} msg={str(e)}",
-                    flush=True,
-                )
+            except Exception:
                 break
 
             reward = float(result.reward or 0.0)
