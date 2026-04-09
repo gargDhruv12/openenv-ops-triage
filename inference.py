@@ -12,6 +12,8 @@ from tasks import TASKS, TASK_ORDER
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN = os.getenv("HF_TOKEN")
+# Hackathon validator injects API_KEY for LiteLLM proxy auth.
+API_KEY = os.getenv("API_KEY")
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "openenv-ops-triage:latest")
 BENCHMARK = "ops_triage_env"
 MAX_STEPS = 12
@@ -178,11 +180,12 @@ async def run_task(task_name: str, client: Any | None) -> float:
 
 async def main() -> None:
     client = None
-    if HF_TOKEN:
+    api_key = API_KEY or HF_TOKEN
+    if api_key:
         # Import lazily so validation doesn't fail if openai isn't configured.
         from openai import OpenAI  # type: ignore
 
-        client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+        client = OpenAI(base_url=API_BASE_URL, api_key=api_key)
     task_names = os.getenv("OPS_TRIAGE_TASKS")
     selected_tasks = [t.strip() for t in task_names.split(",")] if task_names else TASK_ORDER
     for task in selected_tasks:
