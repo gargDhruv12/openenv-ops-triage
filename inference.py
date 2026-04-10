@@ -6,6 +6,7 @@ import os
 from typing import Any, List, Optional
 
 from client import OpsTriageEnv
+from graders import clamp_open_unit_interval
 from models import OpsTriageAction
 from tasks import TASKS, TASK_ORDER
 
@@ -17,18 +18,6 @@ API_KEY = os.getenv("API_KEY")
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "openenv-ops-triage:latest")
 BENCHMARK = "ops_triage_env"
 MAX_STEPS = 12
-# Hackathon Phase 2: per-task score must be strictly in (0, 1), not 0.0 or 1.0.
-_SCORE_EPS = 1e-6
-
-
-def _open_unit_interval_score(x: float) -> float:
-    """Map a [0, 1] proxy score into (0, 1) exclusive of endpoints."""
-    clamped = min(max(float(x), 0.0), 1.0)
-    if clamped <= _SCORE_EPS:
-        return _SCORE_EPS
-    if clamped >= 1.0 - _SCORE_EPS:
-        return 1.0 - _SCORE_EPS
-    return clamped
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -45,8 +34,9 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    # Use enough precision so small interior scores are not parsed as 0.0 (e.g. 1e-6 -> "0.00").
     print(
-        f"[END] success={str(success).lower()} steps={steps} score={score:.2f} rewards={rewards_str}",
+        f"[END] success={str(success).lower()} steps={steps} score={score:.8f} rewards={rewards_str}",
         flush=True,
     )
 
@@ -148,7 +138,7 @@ async def run_task(task_name: str, client: Any | None) -> float:
     success = False
     raw_score = 0.0
     steps = 0
-    score = _open_unit_interval_score(0.0)
+    score = clamp_open_unit_interval(0.0)
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
     env = None
@@ -198,7 +188,7 @@ async def run_task(task_name: str, client: Any | None) -> float:
             clipped_positive = sum(max(0.0, r) for r in rewards)
             raw_score = min(clipped_positive / max(len(rewards), 1), 1.0)
 
-        score = _open_unit_interval_score(raw_score)
+        score = clamp_open_unit_interval(raw_score)
         success = raw_score >= 0.65
     finally:
         if env is not None:
@@ -206,7 +196,7 @@ async def run_task(task_name: str, client: Any | None) -> float:
                 await env.close()
             except Exception:
                 pass
-        score = _open_unit_interval_score(raw_score)
+        score = clamp_open_unit_interval(raw_score)
         log_end(success=success, steps=steps, score=score, rewards=rewards)
     return score
 

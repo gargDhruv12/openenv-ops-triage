@@ -6,6 +6,20 @@ from typing import Dict, List
 
 from tasks import TaskSpec
 
+# Phase 2 validators require every reported score strictly in (0, 1), not 0.0 / 1.0.
+# Use 0.01 margin so values stay unambiguous even when formatted with :.2f in logs.
+OPEN_INTERVAL_EPS = 0.01
+
+
+def clamp_open_unit_interval(x: float) -> float:
+    """Map any [0, 1] value into (0, 1) with a stable margin from the endpoints."""
+    v = min(max(float(x), 0.0), 1.0)
+    if v <= OPEN_INTERVAL_EPS:
+        return OPEN_INTERVAL_EPS
+    if v >= 1.0 - OPEN_INTERVAL_EPS:
+        return 1.0 - OPEN_INTERVAL_EPS
+    return v
+
 
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.strip().lower())
@@ -36,18 +50,12 @@ def grade_final_submission(
     resolution_score = _keyword_coverage(resolution_text, task.required_resolution_keywords)
 
     weighted = (0.35 * owner_score) + (0.30 * severity_score) + (0.35 * resolution_score)
-    score = min(max(weighted, 0.0), 1.0)
-    # Strict (0, 1) for validators that reject exactly 0.0 or 1.0.
-    eps = 1e-6
-    if score <= eps:
-        score = eps
-    elif score >= 1.0 - eps:
-        score = 1.0 - eps
+    score = clamp_open_unit_interval(weighted)
     return GradeBreakdown(
         score=score,
         components={
-            "owner": owner_score,
-            "severity": severity_score,
-            "resolution": resolution_score,
+            "owner": clamp_open_unit_interval(owner_score),
+            "severity": clamp_open_unit_interval(severity_score),
+            "resolution": clamp_open_unit_interval(resolution_score),
         },
     )

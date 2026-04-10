@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from graders import grade_final_submission
+from graders import OPEN_INTERVAL_EPS, grade_final_submission
 from tasks import TASK_ORDER, TASKS
 
 
@@ -20,11 +20,12 @@ def main() -> None:
             proposed_severity=task.expected_severity,
             resolution_text=" ".join(task.required_resolution_keywords),
         )
-        assert 0.0 <= result.score <= 1.0, f"Score out of range for {task_name}"
+        lo, hi = OPEN_INTERVAL_EPS, 1.0 - OPEN_INTERVAL_EPS
+        assert lo <= result.score <= hi, f"Score out of open interval for {task_name}"
         print(
-            f"task={task_name} difficulty={task.difficulty} score={result.score:.2f} "
-            f"owner={result.components['owner']:.2f} severity={result.components['severity']:.2f} "
-            f"resolution={result.components['resolution']:.2f}"
+            f"task={task_name} difficulty={task.difficulty} score={result.score:.6f} "
+            f"owner={result.components['owner']:.6f} severity={result.components['severity']:.6f} "
+            f"resolution={result.components['resolution']:.6f}"
         )
 
 
