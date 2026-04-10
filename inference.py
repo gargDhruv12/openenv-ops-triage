@@ -17,6 +17,18 @@ API_KEY = os.getenv("API_KEY")
 IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME", "openenv-ops-triage:latest")
 BENCHMARK = "ops_triage_env"
 MAX_STEPS = 12
+# Hackathon Phase 2: per-task score must be strictly in (0, 1), not 0.0 or 1.0.
+_SCORE_EPS = 1e-6
+
+
+def _open_unit_interval_score(x: float) -> float:
+    """Map a [0, 1] proxy score into (0, 1) exclusive of endpoints."""
+    clamped = min(max(float(x), 0.0), 1.0)
+    if clamped <= _SCORE_EPS:
+        return _SCORE_EPS
+    if clamped >= 1.0 - _SCORE_EPS:
+        return 1.0 - _SCORE_EPS
+    return clamped
 
 
 def log_start(task: str, env: str, model: str) -> None:
@@ -134,8 +146,9 @@ def _fallback_policy_action(task_name: str, step_idx: int) -> OpsTriageAction:
 async def run_task(task_name: str, client: Any | None) -> float:
     rewards: List[float] = []
     success = False
-    score = 0.0
+    raw_score = 0.0
     steps = 0
+    score = _open_unit_interval_score(0.0)
 
     log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
     env = None
@@ -145,51 +158,55 @@ async def run_task(task_name: str, client: Any | None) -> float:
                 IMAGE_NAME, env_vars={"OPS_TRIAGE_TASK": task_name}
             )
         except Exception:
-            # Keep stdout strictly to START/STEP/END for validators.
-            return 0.0
-
-        result = await env.reset()
-        for step_idx in range(1, MAX_STEPS + 1):
-            obs_dict = result.observation.model_dump()
-            try:
-                if client is None:
-                    action = _fallback_policy_action(task_name=task_name, step_idx=step_idx)
-                else:
-                    action = _get_model_action(
-                        client=client, task_name=task_name, observation=obs_dict
+            raw_score = 0.0
+        else:
+            result = await env.reset()
+            for step_idx in range(1, MAX_STEPS + 1):
+                obs_dict = result.observation.model_dump()
+                try:
+                    if client is None:
+                        action = _fallback_policy_action(task_name=task_name, step_idx=step_idx)
+                    else:
+                        action = _get_model_action(
+                            client=client, task_name=task_name, observation=obs_dict
+                        )
+                except Exception:
+                    action = OpsTriageAction(
+                        action_type="inspect_ticket", focus_field="error_signature"
                     )
-            except Exception:
-                action = OpsTriageAction(action_type="inspect_ticket", focus_field="error_signature")
 
-            try:
-                result = await env.step(action)
-            except Exception:
-                break
+                try:
+                    result = await env.step(action)
+                except Exception:
+                    break
 
-            reward = float(result.reward or 0.0)
-            rewards.append(reward)
-            steps = step_idx
-            err = result.observation.last_action_error
-            log_step(
-                step=step_idx,
-                action=action.model_dump_json(),
-                reward=reward,
-                done=result.done,
-                error=err,
-            )
-            if result.done:
-                break
+                reward = float(result.reward or 0.0)
+                rewards.append(reward)
+                steps = step_idx
+                err = result.observation.last_action_error
+                log_step(
+                    step=step_idx,
+                    action=action.model_dump_json(),
+                    reward=reward,
+                    done=result.done,
+                    error=err,
+                )
+                if result.done:
+                    break
 
-        # Final score is normalized cumulative positive reward proxy.
-        clipped_positive = sum(max(0.0, r) for r in rewards)
-        score = min(clipped_positive / max(len(rewards), 1), 1.0)
-        success = score >= 0.65
+            # Final score is normalized cumulative positive reward proxy.
+            clipped_positive = sum(max(0.0, r) for r in rewards)
+            raw_score = min(clipped_positive / max(len(rewards), 1), 1.0)
+
+        score = _open_unit_interval_score(raw_score)
+        success = raw_score >= 0.65
     finally:
         if env is not None:
             try:
                 await env.close()
             except Exception:
                 pass
+        score = _open_unit_interval_score(raw_score)
         log_end(success=success, steps=steps, score=score, rewards=rewards)
     return score
 

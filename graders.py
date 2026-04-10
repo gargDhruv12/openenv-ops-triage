@@ -37,6 +37,12 @@ def grade_final_submission(
 
     weighted = (0.35 * owner_score) + (0.30 * severity_score) + (0.35 * resolution_score)
     score = min(max(weighted, 0.0), 1.0)
+    # Strict (0, 1) for validators that reject exactly 0.0 or 1.0.
+    eps = 1e-6
+    if score <= eps:
+        score = eps
+    elif score >= 1.0 - eps:
+        score = 1.0 - eps
     return GradeBreakdown(
         score=score,
         components={
