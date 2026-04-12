@@ -7,142 +7,117 @@ sdk: docker
 pinned: false
 ---
 
-# Ops Triage OpenEnv
+# Ops triage (OpenEnv)
 
-OpenEnv environment for **production incident operations triage**: agents inspect ticket evidence, search runbooks, draft stakeholder-facing resolutions, and finalize owner, severity, and messaging—similar to real on-call / incident-commander workflows.
+Small OpenEnv benchmark around **incident triage**: you get a ticket, dig for missing context, skim runbooks, draft something you’d actually paste in Slack, then lock in owner + severity. Nothing fancy—just closer to on-call work than picking moves in a gridworld.
 
-## Motivation and real-world utility
+Built for the Meta × Scaler OpenEnv track: typed `step`/`reset`, Docker Space, and a root `inference.py` that talks to the hosted LLM proxy like the sample.
 
-Most public RL/agent benchmarks avoid messy operational work. This environment targets a gap that teams actually care about: **structured triage under partial observability**. Tickets start with surface fields; critical diagnosis lives in hidden evidence until the agent chooses to inspect the right attributes. Runbook lookup is imperfect on purpose. The grader rewards correct routing (owner, severity) and concrete communication quality (keyword coverage for mitigation concepts), not trivia.
+## What it does
 
-This is intended for **training and evaluating** agents that must combine information gathering, tool-like actions, and structured decisions—closer to reliability engineering practice than game-like MDPs.
+- Ticket fields are partly **hidden** until you `inspect_ticket` the right keys.
+- Runbook search is a **substring match**—you can whiff and still get a default hit.
+- Rewards aren’t only at the end: small nudges for useful inspection, runbook use, draft quality; slaps for garbage or repeat junk.
+- Three episodes in `tasks.py`: **easy / medium / hard** (payment noise → regional login pain → ugly multi-tenant data mess).
 
-## Action space (`OpsTriageAction`)
+## Actions (`models.py` → `OpsTriageAction`)
 
-Defined in `models.py` (Pydantic, OpenEnv `Action` subtype):
+| Field | Notes |
+|-------|--------|
+| `action_type` | `inspect_ticket`, `lookup_runbook`, `draft_resolution`, `finalize` |
+| `focus_field` | For inspect: which ticket field |
+| `query` | For runbook search |
+| `resolution_text` | Draft or final text |
+| `proposed_owner` / `proposed_severity` | Your call |
 
-| Field | Role |
-|--------|------|
-| `action_type` | One of: `inspect_ticket`, `lookup_runbook`, `draft_resolution`, `finalize` |
-| `focus_field` | Ticket field name for `inspect_ticket` |
-| `query` | Substring search for `lookup_runbook` |
-| `resolution_text` | Draft or final stakeholder message |
-| `proposed_owner` | Predicted owning team |
-| `proposed_severity` | One of `low`, `medium`, `high`, `critical` |
+## Observations (`OpsTriageObservation`)
 
-## Observation space (`OpsTriageObservation`)
+| Field | Notes |
+|-------|--------|
+| `task_name`, `instruction` | What you’re solving |
+| `visible_ticket` | What you’re allowed to see right now |
+| `discovered_runbooks` | What lookup returned |
+| `progress`, `checklist` | Rough completion signal |
+| `message`, `last_action_error` | Feedback / why an action failed |
+| `done`, `reward` | Episode over? last step reward |
 
-| Field | Role |
-|--------|------|
-| `task_name`, `instruction` | Task id and natural-language objective |
-| `visible_ticket` | Fields currently visible (initial ticket + revealed hidden fields) |
-| `discovered_runbooks` | Runbooks retrieved via lookup |
-| `progress` | Scalar in `[0.0, 1.0]` from checklist completion |
-| `checklist` | Booleans: inspected, runbook used, draft written, finalized |
-| `message` | Environment feedback for the last action |
-| `last_action_error` | Parse/validation error text if the action was invalid |
-| `done`, `reward` | Episode termination and last-step reward |
+## Tasks
 
-## Tasks and difficulty
+| Id | Level | One-liner |
+|----|-------|-----------|
+| `payment-webhook-timeout-easy` | easy | Webhook pain, one merchant, smaller blast radius |
+| `login-outage-regional-medium` | medium | Identity deploy, chunk of users unhappy |
+| `data-corruption-multi-tenant-hard` | hard | Enterprise-y data integrity; more keywords and sharper comms expected |
 
-All tasks live in `tasks.py` (three tasks, increasing difficulty):
+Gold labels and required phrases live next to each task in `tasks.py`.
 
-| Task id | Difficulty | Summary |
-|---------|------------|---------|
-| `payment-webhook-timeout-easy` | Easy | Single-merchant payment webhook delays; narrow blast radius |
-| `login-outage-regional-medium` | Medium | Regional identity impact after deploy; broader user-facing risk |
-| `data-corruption-multi-tenant-hard` | Hard | Multi-tenant analytics integrity; containment + comms bar is higher |
+## Grader
 
-Each task defines: public ticket fields, **hidden** diagnostic fields, runbook catalog, gold owner/severity, required resolution phrases, and a step budget.
+`graders.py` — all string math, **deterministic**, same input → same score:
 
-## Grading (deterministic, reproducible)
+- 35% owner string match  
+- 30% severity match  
+- 35% share of required keywords in the resolution text  
 
-`graders.py` implements a **deterministic** scorer (no randomness, no network):
+Final number gets nudged to sit **just inside** 0 and 1 (not exactly 0.0 or 1.0) because the auto-grader was picky about endpoints. Doesn’t change ordering meaningfully.
 
-- **Owner** (35%): exact normalized match to expected team string  
-- **Severity** (30%): exact normalized match to expected severity  
-- **Resolution** (35%): fraction of required keywords present in normalized resolution text  
-
-The weighted score is then passed through `clamp_open_unit_interval()` so reported values stay strictly inside **(0, 1)** for automated evaluation pipelines that reject exact `0.0` / `1.0` endpoints. Internally, grading logic is still the weighted mix above; the clamp only adjusts boundary cases for tooling compatibility.
-
-Run a quick reproducibility check:
+Sanity check:
 
 ```bash
 python scripts/task_grader_check.py
 ```
 
-With **oracle** submissions (correct owner, severity, and all keywords in text), you should see composite scores **≈ 0.99** per task after the open-interval clamp (not exactly 1.0 by design).
+Oracle-style answers land around **~0.99** per task after that nudge.
 
-## Reward shaping and episode boundaries
+## Baseline (`inference.py`)
 
-`server/ops_triage_environment.py`:
+Runs the env in Docker, calls the model through **`OpenAI`** with **`API_BASE_URL`** + **`API_KEY`** when the platform sets them (local hack: `HF_TOKEN` still works). Stdout lines must look like:
 
-- **Sparse but not only terminal**: bonuses for revealing hidden fields, successful runbook matches, draft quality preview via grader resolution channel; penalties for invalid or loop-like actions.  
-- **Terminal reward** on `finalize`: combines grader score and a mild time-efficiency term.  
-- **`reset()`** rebuilds ticket visibility, runbooks, checklist, caches, and step state—clean episode start.  
-- **Done** is set when `finalize` succeeds or step budget is exceeded.
+`[START] …` → `[STEP] …` → `[END] …`
 
-## Baseline performance (`inference.py`)
+Per-task score in `[END]` comes from summed positive rewards, normalized, then the same inner (0,1) clip. **Your mileage varies** with model and whether Docker actually comes up—don’t expect identical digits to my laptop.
 
-The root **`inference.py`** is the hackathon baseline: it drives the Docker env via `OpsTriageEnv.from_docker_image`, uses the **OpenAI** client with platform-provided **`API_BASE_URL`** and **`API_KEY`** (LiteLLM proxy in evaluation), and prints strict stdout lines:
+**Baseline performance scores (reference):** run `python scripts/task_grader_check.py` with oracle owner/severity and all required keywords in the resolution text. On my side that reports about **0.99** composite per task (after the score nudge). LLM-driven `inference.py` runs won’t match that unless the model nails every field and keyword.
 
-`[START]`, `[STEP]`, `[END]`
+## Run it
 
-Reported **per-task score** in `[END]` is a normalized positive-reward proxy from environment steps, then clamped to the open interval **(0, 1)** for the same evaluation rules. Exact numbers **depend on the model**, Docker availability, and run length; they are **not** fixed constants across machines.
-
-**Reference (deterministic grader only, oracle text):** see `python scripts/task_grader_check.py` output above—use that for “grader ceiling” reporting, not as a guarantee for LLM-driven `inference.py` runs.
-
-## Setup and usage
-
-### Local Python
+**Server**
 
 ```bash
 python -m venv .venv
-# Windows: .\.venv\Scripts\python -m pip install -r requirements.txt
+source .venv/bin/activate   # Windows: .\.venv\Scripts\python -m pip install ...
 pip install -r requirements.txt
 uvicorn server.app:app --host 0.0.0.0 --port 8000
 ```
 
-### Baseline inference
-
-Set env vars as required by the platform (evaluation injects `API_BASE_URL`, `API_KEY`; local dev may use `HF_TOKEN` as fallback). Optional: `LOCAL_IMAGE_NAME`, `OPS_TRIAGE_TASKS`.
+**Baseline**
 
 ```bash
 python inference.py
 ```
 
-### Docker
+**Docker**
 
 ```bash
 docker build -t openenv-ops-triage:latest .
 docker run --rm -p 8000:8000 openenv-ops-triage:latest
 ```
 
-Hugging Face Spaces (Docker SDK) should bind **`PORT`**; this repo’s `Dockerfile` uses `${PORT:-7860}` for that.
+HF Space uses **`PORT`**; Dockerfile listens on `${PORT:-7860}`.
 
-### OpenEnv validation
-
-With `openenv-core` installed:
+**Validate (if you have the CLI)**
 
 ```bash
 openenv validate
 ```
 
-## Project layout
+## Repo map
 
-- `openenv.yaml` — environment metadata  
-- `server/app.py` — FastAPI app factory (`create_app`)  
-- `server/ops_triage_environment.py` — environment logic  
-- `models.py` — typed action/observation models  
-- `tasks.py`, `graders.py` — task specs and grading  
-- `client.py` — HTTP/Docker client helper  
-- `inference.py` — baseline agent script (required name/location)  
-- `scripts/task_grader_check.py` — grader smoke test  
-
-## Originality (plagiarism-safe scope)
-
-This repository implements a **specific scenario** (ops triage with hidden ticket fields, runbook search, draft/finalize lifecycle, and a three-part grader) on top of the public OpenEnv server patterns. It is **not** a copy-paste of another published OpenEnv environment: task narratives, hidden-field structure, keyword sets, runbook lists, and reward shaping are authored for this benchmark. If you extend it, keep attribution to OpenEnv and document new tasks/graders you add.
-
-## License and citation
-
-Use this environment under the terms of your hackathon / repo license. When citing, name the environment (**ops triage / incident triage OpenEnv**) and link this repository and the OpenEnv project you built upon.
+- `openenv.yaml` — metadata  
+- `server/app.py` — app entry  
+- `server/ops_triage_environment.py` — env logic + rewards  
+- `models.py` — Pydantic action/obs  
+- `tasks.py` / `graders.py` — specs + scoring  
+- `client.py` — env client  
+- `inference.py` — baseline agent  
+- `scripts/task_grader_check.py` — quick grader pass  
